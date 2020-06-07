@@ -21,12 +21,6 @@ option(ENABLE_TF_GCP  "enable tensorflow gcp support" OFF)
 option(ENABLE_TF_HDFS  "enable tensorflow hdfs support" OFF)
 option(ENABLE_TF_NCCL  "enable tensorflow nccl support" OFF)
 
-add_custom_target(configure_bazel
-	COMMAND ${Bazelisk}
-	USES_TERMINAL
-	WORKING_DIRECTORY ${TENSORFLOW_DIR})
-
-
 set(CUSTOM_TF_CONFIG "--config=monolithic" "--config=v2")
 if (NOT ${ENABLE_TF_AWS})
 	list(APPEND CUSTOM_TF_CONFIG "--config=noaws")
@@ -90,66 +84,66 @@ endif()
 
 add_custom_target(list_tf_targets
 	USES_TERMINAL
-	DEPENDS configure_bazel
 	WORKING_DIRECTORY ${TENSORFLOW_DIR}
 	COMMAND bazel query "attr(visibility, \"//visibility:public\", //tensorflow:*)")
 
-add_custom_target(configure_tf
-	USES_TERMINAL
-	DEPENDS configure_bazel
-	WORKING_DIRECTORY ${TENSORFLOW_DIR}
-	COMMAND export PYTHONPATH="${Python}"
-			PYTHON_BIN_PATH="${PYTHON_BIN_PATH}"
-			PYTHON_LIB_PATH="${PYTHON_LIB_PATH}"
-			TF_NEED_CUDA="${TF_NEED_CUDA}"
-			TF_CUDA_CLANG="${TF_CUDA_CLANG}"
-			TF_DOWNLOAD_CLANG="${TF_DOWNLOAD_CLANG}"
-			TF_TENSORRT_VERSION="${TF_TENSORRT_VERSION}"
-			TF_NEED_ROCM="${TF_NEED_ROCM}"
-			TF_CONFIGURE_IOS="${TF_CONFIGURE_IOS}"
-			TF_ENABLE_XLA="${TF_ENABLE_XLA}"
-			TF_NEED_OPENCL_SYCL="${TF_NEED_OPENCL_SYCL}"
-			TF_SET_ANDROID_WORKSPACE="${TF_SET_ANDROID_WORKSPACE}"
-			CC_OPT_FLAGS="${CC_OPT_FLAGS}"
-			TEST_TMPDIR="${TF_BIN_DIR}" # Specify bazel output location
-			&& ./configure)
+set(_tf_targets "//tensorflow:tensorflow_cc" "//tensorflow:install_headers")
 
-add_external_library(TARGET tensorflow_cc
-	# Build tensorflow into the CMAKE Binary_DIR
-	#                                                               build with 'opt' flags
+
+execute_process(COMMAND sh -c "cat tensorflow/tools/pip_package/setup.py | grep \"protobuf.*=\" | awk '{print $3}' | sed \"s/',//g\""
+	OUTPUT_VARIABLE protobuf_version
+	WORKING_DIRECTORY ${TENSORFLOW_DIR}
+	OUTPUT_STRIP_TRAILING_WHITESPACE)
+message("Using Protobuf version: " ${protobuf_version})
+
+execute_process(COMMAND ${Bazelisk}
+		WORKING_DIRECTORY ${TENSORFLOW_DIR}
+		OUTPUT_QUIET)
+execute_process(COMMAND export PYTHONPATH="${Python}" 
+		COMMAND export PYTHON_BIN_PATH="${PYTHON_BIN_PATH}" PYTHON_LIB_PATH="${PYTHON_LIB_PATH}" TF_NEED_CUDA="${TF_NEED_CUDA}" TF_CUDA_CLANG="${TF_CUDA_CLANG}" TF_DOWNLOAD_CLANG="${TF_DOWNLOAD_CLANG}" TF_TENSORRT_VERSION="${TF_TENSORRT_VERSION}" TF_NEED_ROCM="${TF_NEED_ROCM}" TF_CONFIGURE_IOS="${TF_CONFIGURE_IOS}" TF_ENABLE_XLA="${TF_ENABLE_XLA}" TF_NEED_OPENCL_SYCL="${TF_NEED_OPENCL_SYCL}" TF_SET_ANDROID_WORKSPACE="${TF_SET_ANDROID_WORKSPACE}" CC_OPT_FLAGS="${CC_OPT_FLAGS}" TEST_TMPDIR="${TF_BIN_DIR}" && ./configure
+			WORKING_DIRECTORY ${TENSORFLOW_DIR}
+			OUTPUT_FILE .tf_configure.bazelrc)
+
+set(tf_cc_build_dir ${TENSORFLOW_DIR}/bazel-out/k8-opt/bin)
+set(tf_cc_dir ${tf_cc_build_dir}/tensorflow)
+set(tf_cc_path ${tf_cc_dir}/libtensorflow_cc.so.${TF_VERSION})
+
+add_custom_target(tensorflow_cc
 	COMMAND export TEST_TMPDIR="${TF_BIN_DIR}" && ${Bazelisk} build -c opt ${CUSTOM_TF_CONFIG} //tensorflow:tensorflow_cc
-	USES_TERMINAL
+	DEPENDS ${TENSORFLOW_DIR}/.tf_configure.bazelrc
 	WORKING_DIRECTORY "${TENSORFLOW_DIR}"
-	INCLUDE_DIRS
-		"${TENSORFLOW_DIR}/;" # Standard Headers
-		"${TENSORFLOW_DIR}/bazel-bin/;" # Generated Protobuf
-		"${TENSORFLOW_DIR}/bazel-tensorflow_raw-src/external/eigen_archive/;" # Patch for Eigen
-		"${TENSORFLOW_DIR}/../abseil-cpp" # Missing absl library
-	OUTPUT "${TENSORFLOW_DIR}/bazel-bin/tensorflow/libtensorflow_cc.so.${TF_VERSION}"
-	DEPENDS configure_tf)
-add_external_library(TARGET tensorflow_framework
-	COMMAND touch hello.txt
+	BYPRODUCTS ${tf_cc_path})	
+
+add_custom_target(tensorflow_headers
+	COMMAND export TEST_TMPDIR="${TF_BIN_DIR}" && ${Bazelisk} build -c opt ${CUSTOM_TF_CONFIG} //tensorflow:install_headers //third_party/eigen3:install_eigen_headers
+	DEPENDS ${TENSORFLOW_DIR}/.tf_configure.bazelrc
 	WORKING_DIRECTORY "${TENSORFLOW_DIR}"
-	INCLUDE_DIRS "${TENSORFLOW_DIR}/;" # Standard Headers
-	OUTPUT "${TENSORFLOW_DIR}/bazel-bin/tensorflow/libtensorflow_framework.so"
-	DEPENDS tensorflow_cc)
-# add_dependencies(tensorflow_target configure_tf)
+	BYPRODUCTS ${tf_cc_dir}/libtensorflow_framework.so)	
+
 set(protobuf_BUILD_TESTS OFF)
 add_subdirectory(${TENSORFLOW_DIR}/bazel-tensorflow_raw-src/external/com_google_protobuf/cmake/ ${TF_BIN_DIR} EXCLUDE_FROM_ALL)
 
 add_custom_target(tensorflow_cc_copy
 	USES_TERMINAL
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TENSORFLOW_DIR}/bazel-bin/tensorflow/libtensorflow_cc.so.2 ${CMAKE_BINARY_DIR}/libtensorflow_cc.so.2
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${tf_cc_path} ${CMAKE_BINARY_DIR}/libtensorflow_cc.so.2
 	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 	DEPENDS tensorflow_cc)
 
-add_custom_target(tensorflow_framework_copy
-	USES_TERMINAL
-	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TENSORFLOW_DIR}/bazel-bin/tensorflow/libtensorflow_framework.so ${CMAKE_BINARY_DIR}/libtensorflow_framework.so.2
-	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-	DEPENDS tensorflow_cc)
+# We know we're grabbing the same onw as tensorflow always
+FetchContent_Declare(protobuf 
+	GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git 
+	GIT_TAG v${protobuf_version})
+FetchContent_GetProperties(protobuf)
+if (NOT protobuf_POPULATED)
+	FetchContent_Populate(protobuf)
+endif()
+add_subdirectory(${protobuf_SOURCE_DIR}/cmake ${protobuf_BINARY_DIR} EXCLUDE_FROM_ALL)
 
-add_library(tensorflow INTERFACE)
-target_link_libraries(tensorflow INTERFACE tensorflow_cc tensorflow_framework absl::strings protobuf::libprotobuf)
-target_include_directories(tensorflow PUBLIC ${tensorflow_cc_INCLUDE_DIRS})
-add_dependencies(tensorflow tensorflow_cc_copy tensorflow_framework_copy tensorflow_cc_target tensorflow_cc_framework)
+
+add_library(tensorflow STATIC IMPORTED GLOBAL)
+target_include_directories(tensorflow INTERFACE ${TENSORFLOW_DIR})
+set_target_properties(tensorflow PROPERTIES
+	IMPORTED_LOCATION ${tf_cc_path}
+	INTERFACE_INCLUDE_DIRECTORIES "${TENSORFLOW_DIR};${tf_cc_build_dir}/tensorflow/include")
+target_link_libraries(tensorflow INTERFACE absl::strings protobuf::libprotobuf)
+add_dependencies(tensorflow INTERFACE tensorflow_cc_copy tensorflow_headers)
