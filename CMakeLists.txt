@@ -120,9 +120,6 @@ add_custom_target(tensorflow_headers
 	WORKING_DIRECTORY "${TENSORFLOW_DIR}"
 	BYPRODUCTS ${tf_cc_dir}/libtensorflow_framework.so)	
 
-set(protobuf_BUILD_TESTS OFF)
-add_subdirectory(${TENSORFLOW_DIR}/bazel-tensorflow_raw-src/external/com_google_protobuf/cmake/ ${TF_BIN_DIR} EXCLUDE_FROM_ALL)
-
 add_custom_target(tensorflow_cc_copy
 	USES_TERMINAL
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${tf_cc_path} ${CMAKE_BINARY_DIR}/libtensorflow_cc.so.2
@@ -137,11 +134,14 @@ FetchContent_GetProperties(protobuf)
 if (NOT protobuf_POPULATED)
 	FetchContent_Populate(protobuf)
 endif()
+set(protobuf_BUILD_TESTS OFF)
 add_subdirectory(${protobuf_SOURCE_DIR}/cmake ${protobuf_BINARY_DIR} EXCLUDE_FROM_ALL)
 
 
 add_library(tensorflow STATIC IMPORTED GLOBAL)
 target_include_directories(tensorflow INTERFACE ${TENSORFLOW_DIR})
+file(MAKE_DIRECTORY ${TENSORFLOW_DIR})
+file(MAKE_DIRECTORY ${tf_cc_build_dir}/tensorflow/include)
 set_target_properties(tensorflow PROPERTIES
 	IMPORTED_LOCATION ${tf_cc_path}
 	INTERFACE_INCLUDE_DIRECTORIES "${TENSORFLOW_DIR};${tf_cc_build_dir}/tensorflow/include")
